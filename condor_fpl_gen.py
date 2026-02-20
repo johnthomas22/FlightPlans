@@ -254,17 +254,19 @@ def build_fpl(task: dict) -> str:
     ]
 
     # --- [GameOptions] ---
-    task_date_serial = date_to_excel(task.get("task_date", "2026-06-21"))
-    start_time       = task.get("start_time", 12)
-    start_height_m   = task.get("start_height_m", 1000)
+    # Use "or default" rather than dict.get(key, default) so that an
+    # explicitly-stored None (from a failed PDF parse) still falls back.
+    task_date_serial = date_to_excel(task.get("task_date") or "2026-06-21")
+    start_time       = task.get("start_time") or 12
+    start_height_m   = task.get("start_height_m") or 1000
 
-    stw_mins  = task.get("start_time_window", 0)
+    stw_mins  = task.get("start_time_window") or 0
     stw_hours = stw_mins / 60.0
 
-    delay_mins  = task.get("race_start_delay_mins", 5)
+    delay_mins  = task.get("race_start_delay_mins") or 5
     delay_hours = delay_mins / 60.0
 
-    max_speed_kts = task.get("max_start_speed_kts", 81)
+    max_speed_kts = task.get("max_start_speed_kts") or 81
     max_speed_kmh = round(max_speed_kts * KTS_TO_KMH)
 
     st_code = start_type_code(task.get("start_type", "airborne"))

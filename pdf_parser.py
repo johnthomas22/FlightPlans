@@ -288,8 +288,17 @@ def parse_task_pdf(pdf_path: str) -> dict:
     task["landscape"] = _normalise_landscape(raw_ls)
 
     # ---- Date / time ------------------------------------------------------
-    # "Virtual date and time" (label may wrap: "Virtual date and\ntime")
-    raw_dt = _search(r'Virtual date and\s+(\d+\s+\w+\s+\d{4}\s+\d+:\d+)', text)
+    # The label "Virtual date and time" wraps differently depending on PDF
+    # layout.  Try three patterns in order of preference:
+    #   1. Value appears between "and" and "time"  (two-column layout)
+    #   2. Value appears after "time"              (single-column layout)
+    #   3. Fallback: just find any "DD Month YYYY HH:MM" string in the text
+    _DATE_PATTERN = r'\d{1,2}\s+\w+\s+\d{4}\s+\d{1,2}:\d{2}'
+    raw_dt = (
+        _search(r'Virtual date and\s+(' + _DATE_PATTERN + r')', text)
+        or _search(r'Virtual\s+date\s+and\s+time\s+(' + _DATE_PATTERN + r')', text)
+        or _search(r'(' + _DATE_PATTERN + r')', text)
+    )
     task["task_date"], task["start_time"] = _parse_datetime(raw_dt)
     task["condor_version"] = 3100
 
