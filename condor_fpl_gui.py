@@ -104,14 +104,29 @@ class App(tk.Tk):
         ttk.Entry(top, textvariable=self._fpl_dir).grid(row=1, column=1, sticky="ew", **pad)
         ttk.Button(top, text="Browse…", command=self._browse_fpl_dir).grid(row=1, column=2, **pad)
 
-        load_btn = ttk.Button(top, text="Load PDF", command=self._on_load)
-        load_btn.grid(row=2, column=0, columnspan=3, pady=(6, 2))
+        # ---- Middle: notebook with Task Details + Strategy tabs --------
+        nb = ttk.Notebook(self)
+        nb.pack(fill="both", expand=True, padx=10, pady=4)
 
-        # ---- Middle frame: task details --------------------------------
-        mid = ttk.LabelFrame(self, text="Task Details", padding=6)
-        mid.pack(fill="both", expand=True, padx=10, pady=4)
+        mid = ttk.Frame(nb, padding=6)
+        nb.add(mid, text="Task Details")
         mid.columnconfigure(1, weight=1)
         mid.columnconfigure(3, weight=1)
+
+        tab_strat = ttk.Frame(nb, padding=6)
+        nb.add(tab_strat, text="Strategy")
+        tab_strat.rowconfigure(0, weight=1)
+        tab_strat.columnconfigure(0, weight=1)
+
+        self._strategy_text = tk.Text(
+            tab_strat, wrap="word", state="disabled",
+            font=("Courier New", 9), relief="flat",
+        )
+        strat_vsb = ttk.Scrollbar(tab_strat, orient="vertical",
+                                   command=self._strategy_text.yview)
+        self._strategy_text.configure(yscrollcommand=strat_vsb.set)
+        self._strategy_text.grid(row=0, column=0, sticky="nsew")
+        strat_vsb.grid(row=0, column=1, sticky="ns")
 
         # Info grid
         info_fields = [
@@ -194,8 +209,8 @@ class App(tk.Tk):
             self._pdf_path.set(path)
             self._settings["last_pdf_dir"] = os.path.dirname(path)
             save_settings(self._settings)
-            # Auto-suggest output path
             self._suggest_output(path)
+            self._on_load()
 
     def _browse_fpl_dir(self):
         init_dir = self._fpl_dir.get() or DEFAULT_FPL_DIR
@@ -259,10 +274,11 @@ class App(tk.Tk):
         """Worker thread: parse PDF + resolve coords, then update UI."""
         try:
             # Import here so startup doesn't fail if pdfplumber is absent
-            from condor_fpl_gen import pdf_to_task, calc_task_distance
+            from condor_fpl_gen import pdf_to_task, calc_task_distance, generate_strategy
             task = pdf_to_task(pdf_path, fpl_dir)
             dist = calc_task_distance(task["turnpoints"])
-            self.after(0, self._on_load_success, task, dist)
+            strategy = generate_strategy(task)
+            self.after(0, self._on_load_success, task, dist, strategy)
         except SystemExit as e:
             self.after(0, self._on_load_error, f"Could not resolve all turnpoints.\n\n"
                        f"Make sure the FPL Dir contains .fpl files that include the "
@@ -273,9 +289,10 @@ class App(tk.Tk):
         except Exception as e:
             self.after(0, self._on_load_error, str(e))
 
-    def _on_load_success(self, task: dict, dist: float):
+    def _on_load_success(self, task: dict, dist: float, strategy: str):
         self._task = task
         self._populate_details(task, dist)
+        self._show_strategy(strategy)
         self._gen_btn.config(state="normal")
         n_tps = len(task["turnpoints"])
         self._set_status(
@@ -298,6 +315,15 @@ class App(tk.Tk):
         for item in self._tree.get_children():
             self._tree.delete(item)
         self._lbl_dist.config(text="")
+        self._show_strategy("")
+
+    def _show_strategy(self, text: str):
+        """Replace the contents of the Strategy tab text widget."""
+        self._strategy_text.config(state="normal")
+        self._strategy_text.delete("1.0", "end")
+        if text:
+            self._strategy_text.insert("1.0", text)
+        self._strategy_text.config(state="disabled")
 
     def _populate_details(self, task: dict, dist: float):
         wx = task.get("weather", {})

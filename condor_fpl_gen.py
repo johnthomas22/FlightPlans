@@ -344,6 +344,270 @@ def calc_task_distance(tps: list) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Flight strategy generator
+# ---------------------------------------------------------------------------
+
+def _compass(bearing_deg: float) -> str:
+    """Return a compass point string for *bearing_deg* (0 = N, 90 = E)."""
+    dirs = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
+            "S","SSW","SW","WSW","W","WNW","NW","NNW"]
+    return dirs[round(bearing_deg / 22.5) % 16]
+
+
+def generate_strategy(task: dict) -> str:
+    """
+    Return a plain-text flight strategy for *task*.
+
+    Uses TP XY positions (Condor landscape metres, X=East Y=North), weather,
+    and a built-in glider polar table to produce:
+      - Per-leg bearing, distance and wind component analysis
+      - McCready-adjusted cruise speed recommendations
+      - Routing notes (cloud streets, ridge lift, drift offset)
+      - Thermal exit altitude targets for each leg
+    """
+    W = 66  # output width
+
+    def rule(ch="─"):
+        return ch * W
+
+    # ------------------------------------------------------------------ data
+    wx          = task.get("weather", {})
+    wind_dir    = float(wx.get("wind_dir_deg",   0))
+    wind_kts    = float(wx.get("wind_speed_kts", 0))
+    cloud_ft    = float(wx.get("cloud_base_ft",  3000))
+    cloud_m     = round(cloud_ft * FT_TO_M)
+    th_strength = int(wx.get("thermal_strength", 2))   # 1–5
+    th_activity = int(wx.get("thermal_activity", 3))   # 1–5
+    aircraft    = task.get("aircraft", "?")
+    tps         = task.get("turnpoints", [])
+
+    # Estimated thermal climb rate (m/s) per strength level
+    CLIMB_MS = {1: 0.8, 2: 1.5, 3: 2.5, 4: 3.5, 5: 5.0}
+    climb_ms = CLIMB_MS.get(th_strength, 2.0)
+
+    # Glider polar table: (best_glide_ratio, best_ld_kts, nominal_cruise_kts)
+    POLARS = {
+        "StdCirrus":   (38, 59,  80),
+        "LS4":         (40, 60,  85),
+        "LS8":         (44, 65,  90),
+        "Discus2":     (43, 62,  88),
+        "ASW28":       (46, 65,  92),
+        "Nimbus4":     (56, 70, 100),
+        "Ventus2":     (50, 68,  95),
+        "DuoDiscus":   (40, 60,  85),
+        "DuoDiscusXL": (42, 62,  88),
+        "DuoDiscusT":  (40, 60,  85),
+        "Blanik":      (28, 55,  70),
+    }
+    best_glide, best_ld_kts, base_cruise_kts = POLARS.get(aircraft, (38, 59, 80))
+
+    # McCready scaling: stronger thermals → higher cruise speed
+    MC_FACTOR = {1: 0.87, 2: 0.93, 3: 1.00, 4: 1.07, 5: 1.15}
+    cruise_kts = round(base_cruise_kts * MC_FACTOR.get(th_strength, 1.0))
+    cruise_ms  = cruise_kts * KTS_TO_MS
+
+    # Wind velocity vector (East, North) in kts — direction the air moves TO
+    # wind_dir is the FROM direction, so the TO vector is the opposite.
+    wr         = math.radians(wind_dir)
+    wind_east  = -wind_kts * math.sin(wr)   # positive = flowing eastward
+    wind_north = -wind_kts * math.cos(wr)   # positive = flowing northward
+
+    out = []
+
+    # ---------------------------------------------------------------- header
+    desc  = task.get("description", "")
+    title = f"FLIGHT STRATEGY  —  {desc}" if desc else "FLIGHT STRATEGY"
+    out.append(rule("═"))
+    out.append(title)
+    out.append(rule("═"))
+
+    # ---------------------------------------------------------------- conditions
+    out.append("\nCONDITIONS")
+    out.append(rule())
+    out.append(f"  Wind:       {wind_dir:.0f}° @ {wind_kts:.0f} kts  ({_compass(wind_dir)})")
+    out.append(f"  Cloud base: {cloud_ft:.0f} ft  ({cloud_m} m)")
+    out.append(f"  Thermals:   Strength {th_strength}/5,  Activity {th_activity}/5"
+               f"  (~{climb_ms:.1f} m/s climbs)")
+    out.append(f"  Aircraft:   {aircraft}  (best glide ~{best_glide}:1)")
+
+    # ---------------------------------------------------------------- cruise speed
+    out.append("\nSUGGESTED CRUISE SPEED")
+    out.append(rule())
+    out.append(f"  Inter-thermal:  {cruise_kts} kts  "
+               f"(McCready {th_strength} — thermal strength {th_strength}/5)")
+    out.append(f"  Headwind legs:  {cruise_kts + 5}–{cruise_kts + 10} kts  "
+               f"(fly faster to minimise time fighting headwind)")
+    out.append(f"  Tailwind legs:  {max(cruise_kts - 5, best_ld_kts)}–{cruise_kts} kts  "
+               f"(slower — ground speed is already high)")
+
+    # ---------------------------------------------------------------- legs
+    if len(tps) < 2:
+        out.append("\n(Not enough turnpoints for leg analysis.)")
+        return "\n".join(out)
+
+    out.append("\nLEG-BY-LEG ANALYSIS")
+    out.append(rule())
+    out.append(
+        f"  {'#':<3} {'From':<22} {'To':<22} {'Dist':>6}  "
+        f"{'Bearing':>8}  {'Wind':>8}  Assessment"
+    )
+    out.append("  " + rule())
+
+    leg_data = []
+    for i in range(len(tps) - 1):
+        a, b    = tps[i], tps[i + 1]
+        dx      = b["x"] - a["x"]   # East  (Condor X = East)
+        dy      = b["y"] - a["y"]   # North (Condor Y = North)
+        dist_m  = math.sqrt(dx**2 + dy**2)
+        dist_km = dist_m / 1000.0
+        bearing = (math.degrees(math.atan2(dx, dy)) + 360) % 360
+
+        # Leg unit vector
+        ex = dx / dist_m
+        ey = dy / dist_m
+
+        # Wind component along leg: positive = tailwind, negative = headwind
+        tailwind_kts  = wind_east * ex + wind_north * ey
+        crosswind_kts = -wind_east * ey + wind_north * ex  # signed left/right
+
+        if tailwind_kts > 5:
+            assess = "Tailwind  — favourable"
+        elif tailwind_kts < -5:
+            assess = "Headwind  — difficult"
+        else:
+            assess = "Crosswind — neutral"
+
+        out.append(
+            f"  {i+1:<3} {a['name']:<22} {b['name']:<22} "
+            f"{dist_km:>5.1f}km  {_compass(bearing)} {bearing:>3.0f}°  "
+            f"{tailwind_kts:>+6.0f} kts  {assess}"
+        )
+        leg_data.append({
+            "idx":           i + 1,
+            "from":          a["name"],
+            "to":            b["name"],
+            "dist_m":        dist_m,
+            "dist_km":       dist_km,
+            "bearing":       bearing,
+            "tailwind_kts":  tailwind_kts,
+            "crosswind_kts": crosswind_kts,
+        })
+
+    # ---------------------------------------------------------------- routing notes
+    out.append("\nROUTING NOTES")
+    out.append(rule())
+
+    total_tw   = sum(d["tailwind_kts"] * d["dist_km"] for d in leg_data)
+    total_dist = sum(d["dist_km"] for d in leg_data)
+    avg_tw     = total_tw / total_dist if total_dist else 0
+
+    if avg_tw > 3:
+        out.append("  Overall: Downwind-dominant task. Expect faster-than-nominal task times.")
+        out.append("           Build height early — a strong final glide is achievable.")
+    elif avg_tw < -3:
+        out.append("  Overall: Headwind-dominant task. Expect slower-than-nominal task times.")
+        out.append("           Stay high, fly fast, and minimise detours from the optimal track.")
+    else:
+        out.append("  Overall: Wind effects roughly balanced across the task.")
+    out.append("")
+
+    wind_to_dir    = (wind_dir + 180) % 360   # direction the wind flows toward
+    wind_to_cmp    = _compass(wind_to_dir)
+    streets_likely = wind_kts > 12 and th_strength >= 2
+
+    for d in leg_data:
+        tw  = d["tailwind_kts"]
+        xw  = abs(d["crosswind_kts"])
+        brg = d["bearing"]
+        notes = []
+
+        if tw > 8:
+            notes.append(
+                "Strong tailwind — use dolphin technique through weaker thermals; "
+                "accept lower exit heights to maintain ground speed."
+            )
+        elif tw < -8:
+            notes.append(
+                "Strong headwind — fly faster, stay on the optimal track, and "
+                "only circle in strong climbs (>McCready setting)."
+            )
+        elif xw > 10:
+            upwind_side = _compass((brg - 90) % 360)
+            notes.append(
+                f"Crosswind ~{xw:.0f} kts — offset slightly to the {upwind_side} "
+                f"(upwind) side of the direct track to compensate for drift "
+                f"and find better lift along the windward slope."
+            )
+
+        if streets_likely:
+            alignment = abs(((wind_to_dir - brg) + 180) % 360 - 180)
+            if alignment < 35:
+                notes.append(
+                    "Wind broadly aligned with this leg — cloud streets are likely. "
+                    "Look for a street and dolphin straight through rather than circling."
+                )
+
+        if tw < -3:
+            notes.append(
+                f"Headwind leg: look for orographic and convergence lift on the "
+                f"{wind_to_cmp} (upwind) side of ridges and high ground."
+            )
+
+        if not notes:
+            notes.append(
+                "Standard thermal task. Follow cloud shadows and "
+                "look for blue thermals near sun-facing slopes."
+            )
+
+        out.append(f"  Leg {d['idx']} ({d['from']} → {d['to']}):")
+        for note in notes:
+            out.append(f"    • {note}")
+
+    # ---------------------------------------------------------------- thermal exit altitudes
+    out.append("\nTHERMAL EXIT ALTITUDES  (height above destination TP)")
+    out.append(rule())
+    out.append(
+        f"  Cloud base {cloud_m} m  |  best glide {best_glide}:1  |  cruise {cruise_kts} kts"
+    )
+    out.append("")
+    out.append(
+        f"  {'#':<3} {'Destination':<22} {'Dist':>6}  "
+        f"{'Minimum':>9}  {'Target':>9}  Note"
+    )
+    out.append("  " + rule())
+
+    ARRIVAL_M = 300   # minimum arrival margin above TP (m)
+    BUFFER    = 1.30  # target = minimum × buffer
+
+    for d in leg_data:
+        tw_ms     = d["tailwind_kts"] * KTS_TO_MS
+        # Wind-adjusted effective glide ratio over the ground
+        eff_glide = best_glide * (1.0 + tw_ms / cruise_ms) if cruise_ms else best_glide
+        eff_glide = max(eff_glide, best_glide * 0.25)   # sanity floor
+
+        min_m = d["dist_m"] / eff_glide + ARRIVAL_M
+        tgt_m = min(min_m * BUFFER, cloud_m - 200)
+        min_m = round(min_m / 10) * 10
+        tgt_m = round(tgt_m / 10) * 10
+
+        if min_m > cloud_m:
+            note = "⚠ may need intermediate thermal"
+        elif tgt_m >= cloud_m - 250:
+            note = "near cloud base"
+        else:
+            note = ""
+
+        out.append(
+            f"  {d['idx']:<3} {d['to']:<22} {d['dist_km']:>5.1f}km  "
+            f"{min_m:>7} m    {tgt_m:>7} m  {note}"
+        )
+
+    out.append("")
+    out.append(rule("═"))
+    return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
 # PDF pipeline
 # ---------------------------------------------------------------------------
 
@@ -601,6 +865,8 @@ def main():
         wx = task["weather"]
         print(f"  Wind:     {wx['wind_dir_deg']}° @ {wx['wind_speed_kts']}kts")
         print(f"  Landscape:{task['landscape']}")
+        print()
+        print(generate_strategy(task))
         return
 
     # ---- JSON mode ---------------------------------------------------------
@@ -622,6 +888,8 @@ def main():
         print(f"  Aircraft: {task.get('aircraft', '?')}")
         wx = task.get("weather", {})
         print(f"  Wind:     {wx.get('wind_dir_deg', '?')}° @ {wx.get('wind_speed_kts', '?')}kts")
+        print()
+        print(generate_strategy(task))
         return
 
     parser.print_help()
