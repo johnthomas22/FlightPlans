@@ -192,6 +192,9 @@ class TurnpointDatabase:
     def load_fpl_dir(self, directory: str) -> int:
         """
         Scan *directory* for all *.fpl files and add their turnpoints.
+        Files whose names contain 'generated' are skipped — they were produced
+        by this tool and their coordinates ultimately came from the geo-transform,
+        so using them as reference points would create a circular dependency.
         Returns the number of new unique TPs added.
         """
         added = 0
@@ -200,6 +203,8 @@ class TurnpointDatabase:
         for fname in sorted(os.listdir(directory)):
             if not fname.lower().endswith(".fpl"):
                 continue
+            if "generated" in fname.lower():
+                continue  # skip our own output files
             landscape, tps = _parse_fpl(os.path.join(directory, fname))
             if not landscape:
                 continue
@@ -312,31 +317,36 @@ class TurnpointDatabase:
         """
         Look up Condor (X, Y, Z) for *name* in *landscape*.
 
+        The CUP file is the authoritative geographic source.  FPL coordinates
+        are only used as a fallback for turnpoints absent from the CUP.
+
         Resolution order
         ----------------
-        1. Exact normalised name match in FPL db  → returns FPL XY directly.
+        1. Exact CUP name match → geo-transform to XY (CUP is ground truth).
         2. If (lat, lon) provided:
-             a. Find nearest CUP TP within 0.01° (~1 km).
-             b. If that CUP TP name is in FPL db  → return FPL XY.
-             c. Else compute XY via geo-transform; Z from CUP elevation.
-             d. If no nearby CUP TP, try direct geo-transform.
-        3. Exact CUP name match + geo-transform (no lat/lon needed).
-        4. Fuzzy name match in FPL db (last resort; may give wrong results).
+             a. Find nearest CUP TP within 0.01° (~1 km) → geo-transform.
+             b. If no nearby CUP TP, apply geo-transform directly to (lat, lon).
+        3. Exact FPL name match → use FPL XY (only for TPs absent from CUP).
+        4. Fuzzy FPL name match (last resort; may give wrong results).
 
         Returns (x, y, z) tuple, or None if unresolvable.
         """
         lk      = _norm_landscape(landscape)
         tp_dict = self._db.get(lk, {})
+        cup     = self._cup.get(lk, {})
         nk      = _norm_name(name)
 
-        # 1. Exact FPL match
-        if nk in tp_dict:
-            _, x, y, z = tp_dict[nk]
-            return x, y, z
+        # 1. Exact CUP name match → geo-transform (CUP is ground truth)
+        if nk in cup:
+            _, clat, clon, celev = cup[nk]
+            xy = self.latlon_to_xy(landscape, clat, clon)
+            if xy:
+                x, y = xy
+                print(f"  [db] CUP: '{name}' ({x:.0f}, {y:.0f})")
+                return x, y, celev
 
-        # 2. Geo-proximity via supplied lat/lon
+        # 2. CUP geo-proximity via supplied lat/lon
         if lat is not None and lon is not None:
-            cup = self._cup.get(lk, {})
             if cup:
                 best_nk, best_dist = None, float("inf")
                 for cnk, (_, clat, clon, _) in cup.items():
@@ -346,38 +356,33 @@ class TurnpointDatabase:
 
                 if best_dist < 0.01 ** 2 and best_nk is not None:
                     _, clat, clon, celev = cup[best_nk]
-                    # 2a: matched CUP TP also in FPL db?
-                    if best_nk in tp_dict:
-                        _, x, y, z = tp_dict[best_nk]
-                        if best_nk != nk:
-                            print(f"  [db] Geo-match: '{name}' -> '{cup[best_nk][0]}'")
-                        return x, y, z
-                    # 2b: use geo-transform
                     xy = self.latlon_to_xy(landscape, clat, clon)
                     if xy:
                         x, y = xy
-                        tag = f"'{cup[best_nk][0]}'" if best_nk != nk else f"'{name}'"
-                        print(f"  [db] Geo-transform: {tag} ({x:.0f}, {y:.0f})")
+                        if best_nk != nk:
+                            print(f"  [db] Geo-match: '{name}' -> "
+                                  f"'{cup[best_nk][0]}' ({x:.0f}, {y:.0f})")
+                        else:
+                            print(f"  [db] CUP geo: '{name}' ({x:.0f}, {y:.0f})")
                         return x, y, celev
 
-            # 2c: no useful CUP match — try direct geo-transform
+        # 3. FPL exact match — for TPs genuinely absent from the CUP.
+        #    These coordinates come from real historical race .fpl files and
+        #    are more accurate than the geo-transform estimate.
+        if nk in tp_dict:
+            _, x, y, z = tp_dict[nk]
+            print(f"  [db] FPL fallback: '{name}' ({x:.0f}, {y:.0f})")
+            return x, y, z
+
+        # 4. Direct transform — TP not in CUP or FPL, but PDF provides lat/lon.
+        if lat is not None and lon is not None:
             xy = self.latlon_to_xy(landscape, lat, lon)
             if xy:
                 x, y = xy
-                print(f"  [db] Direct geo-transform: '{name}' ({x:.0f}, {y:.0f})")
+                print(f"  [db] Direct transform: '{name}' ({x:.0f}, {y:.0f})")
                 return x, y, 0.0
 
-        # 3. Exact CUP name match + geo-transform (no lat/lon provided)
-        cup = self._cup.get(lk, {})
-        if nk in cup:
-            _, clat, clon, celev = cup[nk]
-            xy = self.latlon_to_xy(landscape, clat, clon)
-            if xy:
-                x, y = xy
-                print(f"  [db] CUP geo-transform: '{name}' ({x:.0f}, {y:.0f})")
-                return x, y, celev
-
-        # 4. Fuzzy FPL match (fallback)
+        # 5. Fuzzy FPL match (last resort)
         if tp_dict:
             hits = get_close_matches(nk, list(tp_dict.keys()), n=1, cutoff=0.75)
             if hits:
