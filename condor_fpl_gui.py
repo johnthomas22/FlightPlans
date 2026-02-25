@@ -29,6 +29,10 @@ DEFAULT_FPL_DIR = os.path.join(
     os.path.expanduser("~"), "Documents", "Condor3", "FlightPlans"
 )
 
+DEFAULT_CUP_DIR = os.path.join(
+    os.path.expanduser("~"), "Documents", "Condor3", "Turnpoints"
+)
+
 DEFAULT_OUTPUT_DIR = os.path.join(
     os.path.expanduser("~"), "Documents", "Condor3", "FlightPlans"
 )
@@ -79,6 +83,7 @@ class App(tk.Tk):
         self._task = None          # parsed + resolved task dict
         self._pdf_path = tk.StringVar()
         self._fpl_dir  = tk.StringVar(value=self._settings.get("fpl_dir", DEFAULT_FPL_DIR))
+        self._cup_dir  = tk.StringVar(value=self._settings.get("cup_dir", DEFAULT_CUP_DIR))
         self._out_path = tk.StringVar()
         self._status   = tk.StringVar(value="Ready — browse for a task briefing PDF to begin.")
 
@@ -103,6 +108,10 @@ class App(tk.Tk):
         ttk.Label(top, text="FPL Dir:").grid(row=1, column=0, sticky="w", **pad)
         ttk.Entry(top, textvariable=self._fpl_dir).grid(row=1, column=1, sticky="ew", **pad)
         ttk.Button(top, text="Browse…", command=self._browse_fpl_dir).grid(row=1, column=2, **pad)
+
+        ttk.Label(top, text="Turnpoints:").grid(row=2, column=0, sticky="w", **pad)
+        ttk.Entry(top, textvariable=self._cup_dir).grid(row=2, column=1, sticky="ew", **pad)
+        ttk.Button(top, text="Browse…", command=self._browse_cup_dir).grid(row=2, column=2, **pad)
 
         # ---- Middle: notebook with Task Details + Strategy tabs --------
         nb = ttk.Notebook(self)
@@ -220,6 +229,15 @@ class App(tk.Tk):
             self._settings["fpl_dir"] = path
             save_settings(self._settings)
 
+    def _browse_cup_dir(self):
+        init_dir = self._cup_dir.get() or DEFAULT_CUP_DIR
+        path = filedialog.askdirectory(title="Select Turnpoints directory (.cup files)",
+                                       initialdir=init_dir)
+        if path:
+            self._cup_dir.set(path)
+            self._settings["cup_dir"] = path
+            save_settings(self._settings)
+
     def _browse_out(self):
         init_dir = os.path.dirname(self._out_path.get()) or self._settings.get(
             "last_out_dir", DEFAULT_OUTPUT_DIR)
@@ -267,22 +285,27 @@ class App(tk.Tk):
         self._task = None
         self._clear_details()
 
-        # Run in background thread so the UI stays responsive
-        threading.Thread(target=self._load_worker, args=(pdf, fpl_dir), daemon=True).start()
+        cup_dir = self._cup_dir.get().strip() or None
 
-    def _load_worker(self, pdf_path: str, fpl_dir: str):
+        # Run in background thread so the UI stays responsive
+        threading.Thread(target=self._load_worker, args=(pdf, fpl_dir, cup_dir),
+                         daemon=True).start()
+
+    def _load_worker(self, pdf_path: str, fpl_dir: str, cup_dir: str):
         """Worker thread: parse PDF + resolve coords, then update UI."""
         try:
             # Import here so startup doesn't fail if pdfplumber is absent
             from condor_fpl_gen import pdf_to_task, calc_task_distance, generate_strategy
-            task = pdf_to_task(pdf_path, fpl_dir)
+            task = pdf_to_task(pdf_path, fpl_dir, cup_dir)
             dist = calc_task_distance(task["turnpoints"])
             strategy = generate_strategy(task)
             self.after(0, self._on_load_success, task, dist, strategy)
         except SystemExit as e:
-            self.after(0, self._on_load_error, f"Could not resolve all turnpoints.\n\n"
+            self.after(0, self._on_load_error,
+                       f"Could not resolve all turnpoints.\n\n"
                        f"Make sure the FPL Dir contains .fpl files that include the "
-                       f"turnpoints for this task.")
+                       f"turnpoints for this task, or that the Turnpoints directory "
+                       f"contains the correct .cup file for this landscape.")
         except ImportError as e:
             self.after(0, self._on_load_error,
                        f"Missing dependency:\n{e}\n\nRun:  pip install pdfplumber")

@@ -52,6 +52,10 @@ DEFAULT_FPL_DIR = os.path.join(
     os.path.expanduser("~"), "Documents", "Condor3", "FlightPlans"
 )
 
+DEFAULT_CUP_DIR = os.path.join(
+    os.path.expanduser("~"), "Documents", "Condor3", "Turnpoints"
+)
+
 
 # ---------------------------------------------------------------------------
 # Conversion helpers
@@ -462,6 +466,13 @@ def generate_strategy(task: dict) -> str:
         dist_km = dist_m / 1000.0
         bearing = (math.degrees(math.atan2(dx, dy)) + 360) % 360
 
+        if dist_m == 0:
+            out.append(
+                f"  {i+1:<3} {a['name']:<22} {b['name']:<22} "
+                f"  !! identical coordinates — likely a database lookup error"
+            )
+            continue
+
         # Leg unit vector
         ex = dx / dist_m
         ey = dy / dist_m
@@ -611,7 +622,7 @@ def generate_strategy(task: dict) -> str:
 # PDF pipeline
 # ---------------------------------------------------------------------------
 
-def _load_database(fpl_dir: str):
+def _load_database(fpl_dir: str, cup_dir: str = None):
     from tp_database import TurnpointDatabase
     db = TurnpointDatabase()
     n = db.load_fpl_dir(fpl_dir)
@@ -620,25 +631,41 @@ def _load_database(fpl_dir: str):
               f"Check --fpl-dir points to a folder of .fpl files.", file=sys.stderr)
     else:
         print(f"[db] Loaded {n} unique turnpoints from {fpl_dir}")
+
+    # Derive CUP dir from FPL dir if not specified (sibling 'Turnpoints' folder)
+    if cup_dir is None:
+        cup_dir = os.path.join(os.path.dirname(fpl_dir), "Turnpoints")
+    if os.path.isdir(cup_dir):
+        for fname in sorted(os.listdir(cup_dir)):
+            if fname.lower().endswith(".cup"):
+                landscape = os.path.splitext(fname)[0]
+                n_cup = db.load_cup(os.path.join(cup_dir, fname), landscape)
+                print(f"[db] Loaded {n_cup} TPs from CUP: {fname}")
+        db.build_transforms()
+    else:
+        print(f"[db] No CUP directory found at '{cup_dir}' — name-only lookup active",
+              file=sys.stderr)
+
     return db
 
 
-def _resolve_tp(db, landscape: str, name: str, kind: str):
-    """Resolve a TP name to (x, y, z) or abort with a clear message."""
-    coords = db.resolve(landscape, name)
+def _resolve_tp(db, landscape: str, name: str, kind: str,
+                lat: float = None, lon: float = None):
+    """Resolve a TP name (and optional lat/lon) to (x, y, z) or abort."""
+    coords = db.resolve(landscape, name, lat=lat, lon=lon)
     if coords is None:
         print(
             f"\nERROR: Cannot find Condor XY coordinates for {kind} '{name}' "
             f"in landscape '{landscape}'.\n"
             f"  Add an .fpl file that uses this TP to the --fpl-dir directory,\n"
-            f"  or enter coordinates manually in a task JSON file.\n",
+            f"  or ensure a .cup file for '{landscape}' is in the --cup-dir.\n",
             file=sys.stderr,
         )
         sys.exit(1)
     return coords
 
 
-def pdf_to_task(pdf_path: str, fpl_dir: str) -> dict:
+def pdf_to_task(pdf_path: str, fpl_dir: str, cup_dir: str = None) -> dict:
     """Parse *pdf_path* and resolve all TP coordinates. Returns a complete task dict."""
     from pdf_parser import parse_task_pdf
 
@@ -650,21 +677,29 @@ def pdf_to_task(pdf_path: str, fpl_dir: str) -> dict:
         sys.exit(1)
 
     landscape = task["landscape"]
-    db = _load_database(fpl_dir)
+    db = _load_database(fpl_dir, cup_dir)
 
     # Resolve airport TP (launch airfield)
+    # Try to get lat/lon from the CUP file to aid resolution.
     airport_name = task.get("airport_name", "")
     if not airport_name:
         print("ERROR: Could not determine launch airfield from PDF (expected 'Airborne over <name>').",
               file=sys.stderr)
         sys.exit(1)
-    ax, ay, az = _resolve_tp(db, landscape, airport_name, "airport")
+    apt_latlon = db.get_cup_latlon(landscape, airport_name)
+    if apt_latlon:
+        apt_lat, apt_lon, _ = apt_latlon
+        ax, ay, az = _resolve_tp(db, landscape, airport_name, "airport",
+                                 lat=apt_lat, lon=apt_lon)
+    else:
+        ax, ay, az = _resolve_tp(db, landscape, airport_name, "airport")
     task["airport_tp"] = {"name": airport_name, "x": ax, "y": ay, "z": az}
 
-    # Resolve each task TP
+    # Resolve each task TP — pass lat/lon from the PDF for geo-transform support
     resolved = []
     for tp in task["turnpoints"]:
-        x, y, z = _resolve_tp(db, landscape, tp["name"], "turnpoint")
+        x, y, z = _resolve_tp(db, landscape, tp["name"], "turnpoint",
+                               lat=tp.get("lat"), lon=tp.get("lon"))
         resolved.append({**tp, "x": x, "y": y, "z": z})
     task["turnpoints"] = resolved
 
@@ -778,6 +813,11 @@ def main():
                         default=DEFAULT_FPL_DIR,
                         help=f"Directory of .fpl files for TP coordinate lookup "
                              f"(default: {DEFAULT_FPL_DIR})")
+    parser.add_argument("--cup-dir",        metavar="DIR",
+                        default=None,
+                        help=f"Directory of .cup landscape files for geo-transform "
+                             f"(default: sibling 'Turnpoints' folder of --fpl-dir, "
+                             f"or {DEFAULT_CUP_DIR})")
 
     args = parser.parse_args()
 
@@ -846,7 +886,7 @@ def main():
 
     # ---- PDF mode ----------------------------------------------------------
     if args.pdf:
-        task     = pdf_to_task(args.pdf, args.fpl_dir)
+        task     = pdf_to_task(args.pdf, args.fpl_dir, args.cup_dir)
         content  = build_fpl(task)
         base     = os.path.splitext(os.path.basename(args.pdf))[0]
         out_path = args.output or (base + ".fpl")
