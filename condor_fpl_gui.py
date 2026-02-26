@@ -205,8 +205,7 @@ class App(tk.Tk):
 
         tree_frame = ttk.Frame(mid)
         tree_frame.grid(row=len(info_fields) + 1, column=0, columnspan=4,
-                        sticky="nsew", padx=4, pady=(0, 4))
-        mid.rowconfigure(len(info_fields) + 1, weight=1)
+                        sticky="ew", padx=4, pady=(0, 4))
 
         cols = ("#", "Name", "Radius", "Angle", "Coords")
         self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=5)
