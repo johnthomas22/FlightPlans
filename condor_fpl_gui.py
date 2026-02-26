@@ -37,6 +37,10 @@ DEFAULT_OUTPUT_DIR = os.path.join(
     os.path.expanduser("~"), "Documents", "Condor3", "FlightPlans"
 )
 
+DEFAULT_XCSOAR_DIR = os.path.join(
+    os.path.expanduser("~"), "Documents", "XCSoarData", "tasks"
+)
+
 
 def load_settings() -> dict:
     try:
@@ -93,8 +97,9 @@ class App(tk.Tk):
         self._pdf_path = tk.StringVar()
         self._fpl_dir  = tk.StringVar(value=self._settings.get("fpl_dir", DEFAULT_FPL_DIR))
         self._cup_dir  = tk.StringVar(value=self._settings.get("cup_dir", DEFAULT_CUP_DIR))
-        self._out_path = tk.StringVar()
-        self._status   = tk.StringVar(value="Ready — browse for a task briefing PDF to begin.")
+        self._out_path  = tk.StringVar()
+        self._xcsoar_dir = tk.StringVar(value=self._settings.get("xcsoar_dir", DEFAULT_XCSOAR_DIR))
+        self._status    = tk.StringVar(value="Ready — browse for a task briefing PDF to begin.")
 
         self._build_ui()
 
@@ -226,11 +231,15 @@ class App(tk.Tk):
         ttk.Entry(bot, textvariable=self._out_path).grid(row=0, column=1, sticky="ew", **pad)
         ttk.Button(bot, text="Browse…", command=self._browse_out).grid(row=0, column=2, **pad)
 
+        ttk.Label(bot, text="XCSoar Dir:").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(bot, textvariable=self._xcsoar_dir).grid(row=1, column=1, sticky="ew", **pad)
+        ttk.Button(bot, text="Browse…", command=self._browse_xcsoar_dir).grid(row=1, column=2, **pad)
+
         self._gen_btn = ttk.Button(
-            bot, text="Generate FPL", command=self._on_generate,
+            bot, text="Generate FPL + XCSoar", command=self._on_generate,
             state="disabled", style="Accent.TButton",
         )
-        self._gen_btn.grid(row=1, column=0, columnspan=3, pady=(6, 2))
+        self._gen_btn.grid(row=2, column=0, columnspan=3, pady=(6, 2))
 
         # ---- Status bar ------------------------------------------------
         status_bar = ttk.Label(self, textvariable=self._status,
@@ -271,6 +280,14 @@ class App(tk.Tk):
         if path:
             self._cup_dir.set(path)
             self._settings["cup_dir"] = path
+            save_settings(self._settings)
+
+    def _browse_xcsoar_dir(self):
+        init_dir = self._xcsoar_dir.get() or DEFAULT_XCSOAR_DIR
+        path = filedialog.askdirectory(title="Select XCSoar tasks directory", initialdir=init_dir)
+        if path:
+            self._xcsoar_dir.set(path)
+            self._settings["xcsoar_dir"] = path
             save_settings(self._settings)
 
     def _browse_out(self):
@@ -527,11 +544,32 @@ class App(tk.Tk):
             ):
                 return
 
+        # --- XCSoar .tsk path (optional) -----------------------------------
+        xcsoar_dir = self._xcsoar_dir.get().strip()
+        base_name  = os.path.splitext(os.path.basename(out))[0]
+        tsk_path   = os.path.join(xcsoar_dir, base_name + ".tsk") if xcsoar_dir else ""
+
+        tps_have_latlon = all(
+            tp.get("lat") is not None for tp in self._task.get("turnpoints", [])
+        )
+        write_tsk = bool(tsk_path and os.path.isdir(xcsoar_dir) and tps_have_latlon)
+
+        if write_tsk and os.path.isfile(tsk_path):
+            if not messagebox.askyesno(
+                "Overwrite XCSoar task?",
+                f"This XCSoar task file already exists:\n{tsk_path}\n\nOverwrite it?",
+                icon="warning",
+            ):
+                write_tsk = False
+
         try:
-            from condor_fpl_gen import build_fpl
+            from condor_fpl_gen import build_fpl, build_xcsoar_tsk
             content = build_fpl(self._task)
             with open(out, "w", newline="\r\n", encoding="utf-8") as f:
                 f.write(content)
+            if write_tsk:
+                with open(tsk_path, "w", encoding="utf-8") as f:
+                    f.write(build_xcsoar_tsk(self._task))
         except Exception as e:
             messagebox.showerror("Generate failed", str(e))
             self._set_status("Generation failed.")
@@ -540,11 +578,16 @@ class App(tk.Tk):
         self._settings["last_out_dir"] = os.path.dirname(out)
         save_settings(self._settings)
 
-        self._set_status(f"Done — written: {out}")
-        messagebox.showinfo("Success",
-                            f"FPL file written:\n{out}\n\n"
-                            f"Copy it to your Condor3\\FlightPlans folder "
-                            f"if it's not already there.")
+        msg = f"FPL file written:\n{out}"
+        if write_tsk:
+            msg += f"\n\nXCSoar task written:\n{tsk_path}"
+        elif xcsoar_dir and not os.path.isdir(xcsoar_dir):
+            msg += f"\n\n(XCSoar directory not found — .tsk not written)"
+        elif xcsoar_dir and not tps_have_latlon:
+            msg += f"\n\n(lat/lon missing from turnpoints — .tsk not written)"
+
+        self._set_status(f"Done — written: {out}" + (f"  +  {tsk_path}" if write_tsk else ""))
+        messagebox.showinfo("Success", msg)
 
     # ------------------------------------------------------------------
     # Utilities

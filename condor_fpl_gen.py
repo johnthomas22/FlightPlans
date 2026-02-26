@@ -56,6 +56,10 @@ DEFAULT_CUP_DIR = os.path.join(
     os.path.expanduser("~"), "Documents", "Condor3", "Turnpoints"
 )
 
+DEFAULT_XCSOAR_DIR = os.path.join(
+    os.path.expanduser("~"), "Documents", "XCSoarData", "tasks"
+)
+
 
 # ---------------------------------------------------------------------------
 # Conversion helpers
@@ -340,6 +344,64 @@ def build_fpl(task: dict) -> str:
     ]
 
     return "\r\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# XCSoar task builder
+# ---------------------------------------------------------------------------
+
+def build_xcsoar_tsk(task: dict) -> str:
+    """
+    Build an XCSoar .tsk XML racing task file from the task dict.
+
+    Requires lat/lon on each turnpoint (populated by pdf_to_task from the PDF
+    or CUP file).  Returns the file content as a UTF-8 string (LF endings).
+
+    Task structure
+    --------------
+    turnpoints[0]    → <Point type="Start">
+    turnpoints[1:-1] → <Point type="Turn">   (one per intermediate waypoint)
+    turnpoints[-1]   → <Point type="Finish">
+
+    All observation zones are mapped to XCSoar Cylinder type using the
+    radius_m from each turnpoint.
+    """
+    tps = task.get("turnpoints", [])
+    if not tps:
+        return ""
+
+    def _escape(s: str) -> str:
+        return s.replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+    lines = [
+        '<?xml version="1.0"?>',
+        '<Task type="RT" start_requires_arm="1">',
+    ]
+
+    for i, tp in enumerate(tps):
+        if i == 0:
+            pt_type = "Start"
+        elif i == len(tps) - 1:
+            pt_type = "Finish"
+        else:
+            pt_type = "Turn"
+
+        lat    = tp.get("lat", 0.0)
+        lon    = tp.get("lon", 0.0)
+        name   = _escape(tp["name"])
+        radius = tp.get("radius_m", 3000)
+
+        lines += [
+            f'  <Point type="{pt_type}">',
+            f'    <Waypoint name="{name}" id="{i}" comment="">',
+            f'      <Location longitude="{lon:.6f}" latitude="{lat:.6f}"/>',
+            f'    </Waypoint>',
+            f'    <ObservationZone type="Cylinder" radius="{radius}"/>',
+            f'  </Point>',
+        ]
+
+    lines.append('</Task>')
+    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -834,6 +896,31 @@ def interactive_mode():
 # Main
 # ---------------------------------------------------------------------------
 
+def _write_xcsoar_tsk(task: dict, base_name: str, xcsoar_dir: str) -> None:
+    """
+    Write an XCSoar .tsk file to *xcsoar_dir* if the directory exists and all
+    turnpoints have lat/lon.  Silently skips if preconditions are not met.
+    Applies the same overwrite-protection rule as the CLI: stops with an error
+    if the file already exists.
+    """
+    if not xcsoar_dir or not os.path.isdir(xcsoar_dir):
+        return
+    tps = task.get("turnpoints", [])
+    if not all(tp.get("lat") is not None for tp in tps):
+        print("[xcsoar] Skipping .tsk — lat/lon missing from one or more turnpoints.",
+              file=sys.stderr)
+        return
+    tsk_path = os.path.join(xcsoar_dir, base_name + ".tsk")
+    if os.path.exists(tsk_path):
+        print(f"ERROR: XCSoar task file already exists: {tsk_path}\n"
+              f"       Rename or delete it first.",
+              file=sys.stderr)
+        sys.exit(1)
+    with open(tsk_path, "w", encoding="utf-8") as f:
+        f.write(build_xcsoar_tsk(task))
+    print(f"  XCSoar:   {tsk_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate a Condor 2/3 .fpl file from a task briefing PDF or task JSON.",
@@ -862,6 +949,10 @@ def main():
                         help=f"Directory of .cup landscape files for geo-transform "
                              f"(default: sibling 'Turnpoints' folder of --fpl-dir, "
                              f"or {DEFAULT_CUP_DIR})")
+    parser.add_argument("--xcsoar-dir",     metavar="DIR",
+                        default=DEFAULT_XCSOAR_DIR,
+                        help=f"Directory to write XCSoar .tsk file alongside the .fpl "
+                             f"(default: {DEFAULT_XCSOAR_DIR}; skip if directory absent)")
 
     args = parser.parse_args()
 
@@ -941,6 +1032,7 @@ def main():
             sys.exit(1)
         with open(out_path, "w", newline="\r\n") as f:
             f.write(content)
+        _write_xcsoar_tsk(task, base, args.xcsoar_dir)
 
         tps      = task["turnpoints"]
         dist     = calc_task_distance(tps)
@@ -967,6 +1059,7 @@ def main():
             task = json.load(f)
 
         content  = build_fpl(task)
+        base     = os.path.splitext(os.path.basename(args.task))[0]
         out_path = args.output or (os.path.splitext(args.task)[0] + ".fpl")
         if os.path.exists(out_path):
             print(f"ERROR: Output file already exists: {out_path}\n"
@@ -975,6 +1068,7 @@ def main():
             sys.exit(1)
         with open(out_path, "w", newline="\r\n") as f:
             f.write(content)
+        _write_xcsoar_tsk(task, base, args.xcsoar_dir)
 
         tps      = task["turnpoints"]
         dist     = calc_task_distance(tps)
