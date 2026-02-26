@@ -1024,7 +1024,7 @@ def main():
         task     = pdf_to_task(args.pdf, args.fpl_dir, args.cup_dir)
         content  = build_fpl(task)
         base     = os.path.splitext(os.path.basename(args.pdf))[0]
-        out_path = args.output or (base + ".fpl")
+        out_path = args.output or (base + "_Claude.fpl")
         if os.path.exists(out_path):
             print(f"ERROR: Output file already exists: {out_path}\n"
                   f"       Rename or delete it first, or use --output to specify a different path.",
@@ -1032,7 +1032,8 @@ def main():
             sys.exit(1)
         with open(out_path, "w", newline="\r\n") as f:
             f.write(content)
-        _write_xcsoar_tsk(task, base, args.xcsoar_dir)
+        tsk_base = os.path.splitext(os.path.basename(out_path))[0]
+        _write_xcsoar_tsk(task, tsk_base, args.xcsoar_dir)
 
         tps      = task["turnpoints"]
         dist     = calc_task_distance(tps)
@@ -1060,7 +1061,7 @@ def main():
 
         content  = build_fpl(task)
         base     = os.path.splitext(os.path.basename(args.task))[0]
-        out_path = args.output or (os.path.splitext(args.task)[0] + ".fpl")
+        out_path = args.output or (base + "_Claude.fpl")
         if os.path.exists(out_path):
             print(f"ERROR: Output file already exists: {out_path}\n"
                   f"       Rename or delete it first, or use --output to specify a different path.",
@@ -1068,7 +1069,8 @@ def main():
             sys.exit(1)
         with open(out_path, "w", newline="\r\n") as f:
             f.write(content)
-        _write_xcsoar_tsk(task, base, args.xcsoar_dir)
+        tsk_base = os.path.splitext(os.path.basename(out_path))[0]
+        _write_xcsoar_tsk(task, tsk_base, args.xcsoar_dir)
 
         tps      = task["turnpoints"]
         dist     = calc_task_distance(tps)

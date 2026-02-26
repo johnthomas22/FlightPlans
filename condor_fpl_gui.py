@@ -325,11 +325,11 @@ class App(tk.Tk):
         base = os.path.splitext(os.path.basename(pdf_path))[0]
         # FPL output
         out_dir = self._settings.get("last_out_dir", DEFAULT_OUTPUT_DIR)
-        self._out_path.set(os.path.normpath(os.path.join(out_dir, base + ".fpl")))
+        self._out_path.set(os.path.normpath(os.path.join(out_dir, base + "_Claude.fpl")))
         # XCSoar TSK output: use saved xcsoar_tsk dir if available, else DEFAULT_XCSOAR_DIR
         saved_tsk = self._settings.get("xcsoar_tsk", "")
         xcsoar_dir = os.path.dirname(saved_tsk) if saved_tsk else DEFAULT_XCSOAR_DIR
-        self._xcsoar_tsk.set(os.path.normpath(os.path.join(xcsoar_dir, base + ".tsk")))
+        self._xcsoar_tsk.set(os.path.normpath(os.path.join(xcsoar_dir, base + "_Claude.tsk")))
 
     # ------------------------------------------------------------------
     # Load PDF
