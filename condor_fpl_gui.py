@@ -501,8 +501,6 @@ class App(tk.Tk):
         for item in self._tree.get_children():
             self._tree.delete(item)
 
-        _TYPE_NAMES = {0: "Cyl", 1: "Sector", 2: "Line"}
-
         tps = task.get("turnpoints", [])
         for i, tp in enumerate(tps):
             if i == 0:
@@ -513,7 +511,7 @@ class App(tk.Tk):
                 label = str(i + 1)
 
             coords_str = _fmt_latlon(tp.get("lat"), tp.get("lon"))
-            type_str   = _TYPE_NAMES.get(tp.get("sector_type", 0), "?")
+            type_str   = "Cyl" if tp.get("angle_deg", 360) == 360 else "Sector"
             self._tree.insert("", "end", values=(
                 label,
                 type_str,

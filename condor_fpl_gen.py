@@ -391,16 +391,12 @@ def build_xcsoar_tsk(task: dict) -> str:
         name   = _escape(tp["name"])
         radius = tp.get("radius_m", 3000)
 
-        sector_type = tp.get("sector_type", 0)
-        angle       = tp.get("angle_deg", 360)
-        if sector_type == 2:
-            oz = f'<ObservationZone type="Line" length="{radius * 2}"/>'
-        elif sector_type == 1:
-            # XCSoar Sector OZ: radius = outer boundary, angle defines the opening.
-            # Without an inner radius, approximate as a Sector with 0 inner.
-            oz = f'<ObservationZone type="Sector" radius="{radius}" inner_radius="0" angle="{angle}"/>'
-        else:
+        angle = tp.get("angle_deg", 360)
+        if angle == 360:
             oz = f'<ObservationZone type="Cylinder" radius="{radius}"/>'
+        else:
+            # Sector OZ: radius = outer boundary; inner_radius=0 (no inner cylinder).
+            oz = f'<ObservationZone type="Sector" radius="{radius}" inner_radius="0" angle="{angle}"/>'
 
         lines += [
             f'  <Point type="{pt_type}">',
@@ -537,15 +533,15 @@ def generate_strategy(task: dict) -> str:
     # ---------------------------------------------------------------- turnpoints
     out.append("\nTURNPOINTS")
     out.append(rule())
-    _TYPE_ABBR = {0: "Cyl", 1: "Sector", 2: "Line"}
     out.append(f"  {'#':<4} {'Name':<24} {'Coordinates':<30} {'Type':<8} {'R1':>7}  {'θ':>5}")
     out.append("  " + rule())
     for i, tp in enumerate(tps):
         label      = "S" if i == 0 else ("F" if i == len(tps) - 1 else str(i + 1))
         latlon     = _fmt_latlon(tp.get("lat"), tp.get("lon"))
         radius_str = f"{tp.get('radius_m', 3000)} m"
-        type_str   = _TYPE_ABBR.get(tp.get("sector_type", 0), "?")
-        angle_str  = f"{tp.get('angle_deg', 360)}°"
+        ang        = tp.get("angle_deg", 360)
+        type_str   = "Cyl" if ang == 360 else "Sector"
+        angle_str  = f"{ang}°"
         out.append(f"  {label:<4} {tp['name']:<24} {latlon:<30} {type_str:<8} {radius_str:>7}  {angle_str:>5}")
 
     # ---------------------------------------------------------------- cruise speed

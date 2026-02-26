@@ -203,24 +203,16 @@ def _parse_turnpoints(text: str) -> list:
         if name.lower() in ("name", "task", "task name"):
             continue
 
-        # Infer Condor sector type from the opening angle:
-        #   θ=360° → Cylinder (sector_type=0, observable from all directions)
-        #   θ<360° → Sector   (sector_type=1, direction=Symmetric)
-        if angle == 360:
-            s_type = 0   # Cylinder
-            s_dir  = 0
-        else:
-            s_type = 1   # Sector (FAI-style)
-            s_dir  = 2   # Symmetric (bisects inbound/outbound legs)
-
         tps.append({
             "name":        name,
             "lat":         lat,
             "lon":         lon,
             "radius_m":    radius,
             "angle_deg":   angle,
-            "sector_type": s_type,
-            "sector_dir":  s_dir,
+            # Condor always uses TPSectorType=0; the opening angle (TPAngle) is
+            # what distinguishes a cylinder (360°) from a sector (<360°).
+            "sector_type": 0,
+            "sector_dir":  0,
         })
 
     return tps
