@@ -207,9 +207,9 @@ class App(tk.Tk):
         tree_frame.grid(row=len(info_fields) + 1, column=0, columnspan=4,
                         sticky="ew", padx=4, pady=(0, 4))
 
-        cols = ("#", "Name", "Radius", "Angle", "Coords")
+        cols = ("#", "Type", "Name", "Radius", "Angle", "Coords")
         self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=5)
-        for c, w in zip(cols, (30, 160, 70, 60, 230)):
+        for c, w in zip(cols, (30, 55, 140, 70, 55, 230)):
             self._tree.heading(c, text=c)
             self._tree.column(c, width=w, anchor="w" if c in ("Name", "Coords") else "center",
                               stretch=(c == "Name"))
@@ -501,6 +501,8 @@ class App(tk.Tk):
         for item in self._tree.get_children():
             self._tree.delete(item)
 
+        _TYPE_NAMES = {0: "Cyl", 1: "Sector", 2: "Line"}
+
         tps = task.get("turnpoints", [])
         for i, tp in enumerate(tps):
             if i == 0:
@@ -511,8 +513,10 @@ class App(tk.Tk):
                 label = str(i + 1)
 
             coords_str = _fmt_latlon(tp.get("lat"), tp.get("lon"))
+            type_str   = _TYPE_NAMES.get(tp.get("sector_type", 0), "?")
             self._tree.insert("", "end", values=(
                 label,
+                type_str,
                 tp["name"],
                 f"{tp['radius_m']} m",
                 f"{tp['angle_deg']}\u00b0",
@@ -523,6 +527,7 @@ class App(tk.Tk):
         if apt:
             self._tree.insert("", 0, values=(
                 "A",
+                "Cyl",
                 apt.get("name", ""),
                 "3000 m",
                 "90\u00b0",
