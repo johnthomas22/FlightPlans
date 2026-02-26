@@ -209,7 +209,7 @@ class App(tk.Tk):
         mid.rowconfigure(len(info_fields) + 1, weight=1)
 
         cols = ("#", "Name", "Radius", "Angle", "Coords")
-        self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=7)
+        self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=5)
         for c, w in zip(cols, (30, 160, 70, 60, 230)):
             self._tree.heading(c, text=c)
             self._tree.column(c, width=w, anchor="w" if c in ("Name", "Coords") else "center",
