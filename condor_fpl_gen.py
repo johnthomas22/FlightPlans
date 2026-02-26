@@ -910,7 +910,7 @@ def _write_xcsoar_tsk(task: dict, base_name: str, xcsoar_dir: str) -> None:
         print("[xcsoar] Skipping .tsk — lat/lon missing from one or more turnpoints.",
               file=sys.stderr)
         return
-    tsk_path = os.path.join(xcsoar_dir, base_name + ".tsk")
+    tsk_path = os.path.normpath(os.path.join(xcsoar_dir, base_name + ".tsk"))
     if os.path.exists(tsk_path):
         print(f"ERROR: XCSoar task file already exists: {tsk_path}\n"
               f"       Rename or delete it first.",

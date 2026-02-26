@@ -98,7 +98,7 @@ class App(tk.Tk):
         self._fpl_dir  = tk.StringVar(value=self._settings.get("fpl_dir", DEFAULT_FPL_DIR))
         self._cup_dir  = tk.StringVar(value=self._settings.get("cup_dir", DEFAULT_CUP_DIR))
         self._out_path  = tk.StringVar()
-        self._xcsoar_dir = tk.StringVar(value=self._settings.get("xcsoar_dir", DEFAULT_XCSOAR_DIR))
+        self._xcsoar_tsk = tk.StringVar(value=self._settings.get("xcsoar_tsk", ""))
         self._status    = tk.StringVar(value="Ready — browse for a task briefing PDF to begin.")
 
         self._build_ui()
@@ -231,9 +231,9 @@ class App(tk.Tk):
         ttk.Entry(bot, textvariable=self._out_path).grid(row=0, column=1, sticky="ew", **pad)
         ttk.Button(bot, text="Browse…", command=self._browse_out).grid(row=0, column=2, **pad)
 
-        ttk.Label(bot, text="XCSoar Dir:").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(bot, textvariable=self._xcsoar_dir).grid(row=1, column=1, sticky="ew", **pad)
-        ttk.Button(bot, text="Browse…", command=self._browse_xcsoar_dir).grid(row=1, column=2, **pad)
+        ttk.Label(bot, text="XCSoar TSK:").grid(row=1, column=0, sticky="w", **pad)
+        ttk.Entry(bot, textvariable=self._xcsoar_tsk).grid(row=1, column=1, sticky="ew", **pad)
+        ttk.Button(bot, text="Browse…", command=self._browse_xcsoar_tsk).grid(row=1, column=2, **pad)
 
         self._gen_btn = ttk.Button(
             bot, text="Generate FPL + XCSoar", command=self._on_generate,
@@ -259,6 +259,7 @@ class App(tk.Tk):
             filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
         )
         if path:
+            path = os.path.normpath(path)
             self._pdf_path.set(path)
             self._settings["last_pdf_dir"] = os.path.dirname(path)
             save_settings(self._settings)
@@ -269,6 +270,7 @@ class App(tk.Tk):
         init_dir = self._fpl_dir.get() or DEFAULT_FPL_DIR
         path = filedialog.askdirectory(title="Select FPL lookup directory", initialdir=init_dir)
         if path:
+            path = os.path.normpath(path)
             self._fpl_dir.set(path)
             self._settings["fpl_dir"] = path
             save_settings(self._settings)
@@ -278,16 +280,26 @@ class App(tk.Tk):
         path = filedialog.askdirectory(title="Select Turnpoints directory (.cup files)",
                                        initialdir=init_dir)
         if path:
+            path = os.path.normpath(path)
             self._cup_dir.set(path)
             self._settings["cup_dir"] = path
             save_settings(self._settings)
 
-    def _browse_xcsoar_dir(self):
-        init_dir = self._xcsoar_dir.get() or DEFAULT_XCSOAR_DIR
-        path = filedialog.askdirectory(title="Select XCSoar tasks directory", initialdir=init_dir)
+    def _browse_xcsoar_tsk(self):
+        current = self._xcsoar_tsk.get()
+        init_dir = os.path.dirname(current) if current else DEFAULT_XCSOAR_DIR
+        init_file = os.path.basename(current) if current else "task.tsk"
+        path = filedialog.asksaveasfilename(
+            title="Save XCSoar task as",
+            initialdir=init_dir,
+            initialfile=init_file,
+            defaultextension=".tsk",
+            filetypes=[("XCSoar task files", "*.tsk"), ("All files", "*.*")],
+        )
         if path:
-            self._xcsoar_dir.set(path)
-            self._settings["xcsoar_dir"] = path
+            path = os.path.normpath(path)
+            self._xcsoar_tsk.set(path)
+            self._settings["xcsoar_tsk"] = path
             save_settings(self._settings)
 
     def _browse_out(self):
@@ -302,15 +314,21 @@ class App(tk.Tk):
             filetypes=[("FPL files", "*.fpl"), ("All files", "*.*")],
         )
         if path:
+            path = os.path.normpath(path)
             self._out_path.set(path)
             self._settings["last_out_dir"] = os.path.dirname(path)
             save_settings(self._settings)
 
     def _suggest_output(self, pdf_path: str):
-        """Pre-fill the output path based on the PDF name."""
+        """Pre-fill the output FPL and XCSoar TSK paths based on the PDF name."""
         base = os.path.splitext(os.path.basename(pdf_path))[0]
+        # FPL output
         out_dir = self._settings.get("last_out_dir", DEFAULT_OUTPUT_DIR)
-        self._out_path.set(os.path.join(out_dir, base + ".fpl"))
+        self._out_path.set(os.path.normpath(os.path.join(out_dir, base + ".fpl")))
+        # XCSoar TSK output: use saved xcsoar_tsk dir if available, else DEFAULT_XCSOAR_DIR
+        saved_tsk = self._settings.get("xcsoar_tsk", "")
+        xcsoar_dir = os.path.dirname(saved_tsk) if saved_tsk else DEFAULT_XCSOAR_DIR
+        self._xcsoar_tsk.set(os.path.normpath(os.path.join(xcsoar_dir, base + ".tsk")))
 
     # ------------------------------------------------------------------
     # Load PDF
@@ -545,14 +563,12 @@ class App(tk.Tk):
                 return
 
         # --- XCSoar .tsk path (optional) -----------------------------------
-        xcsoar_dir = self._xcsoar_dir.get().strip()
-        base_name  = os.path.splitext(os.path.basename(out))[0]
-        tsk_path   = os.path.join(xcsoar_dir, base_name + ".tsk") if xcsoar_dir else ""
+        tsk_path = self._xcsoar_tsk.get().strip()
 
         tps_have_latlon = all(
             tp.get("lat") is not None for tp in self._task.get("turnpoints", [])
         )
-        write_tsk = bool(tsk_path and os.path.isdir(xcsoar_dir) and tps_have_latlon)
+        write_tsk = bool(tsk_path and tps_have_latlon)
 
         if write_tsk and os.path.isfile(tsk_path):
             if not messagebox.askyesno(
@@ -568,6 +584,9 @@ class App(tk.Tk):
             with open(out, "w", newline="\r\n", encoding="utf-8") as f:
                 f.write(content)
             if write_tsk:
+                tsk_dir = os.path.dirname(tsk_path)
+                if tsk_dir and not os.path.isdir(tsk_dir):
+                    os.makedirs(tsk_dir, exist_ok=True)
                 with open(tsk_path, "w", encoding="utf-8") as f:
                     f.write(build_xcsoar_tsk(self._task))
         except Exception as e:
@@ -576,14 +595,14 @@ class App(tk.Tk):
             return
 
         self._settings["last_out_dir"] = os.path.dirname(out)
+        if write_tsk:
+            self._settings["xcsoar_tsk"] = tsk_path
         save_settings(self._settings)
 
         msg = f"FPL file written:\n{out}"
         if write_tsk:
             msg += f"\n\nXCSoar task written:\n{tsk_path}"
-        elif xcsoar_dir and not os.path.isdir(xcsoar_dir):
-            msg += f"\n\n(XCSoar directory not found — .tsk not written)"
-        elif xcsoar_dir and not tps_have_latlon:
+        elif tsk_path and not tps_have_latlon:
             msg += f"\n\n(lat/lon missing from turnpoints — .tsk not written)"
 
         self._set_status(f"Done — written: {out}" + (f"  +  {tsk_path}" if write_tsk else ""))
