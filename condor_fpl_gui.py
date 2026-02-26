@@ -90,7 +90,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("Condor FPL Generator")
         self.resizable(True, True)
-        self.minsize(580, 620)
+        self.minsize(700, 640)
+        self.geometry("920x720")
 
         self._settings = load_settings()
         self._task = None          # parsed + resolved task dict
