@@ -91,7 +91,7 @@ class App(tk.Tk):
         self.title("Condor FPL Generator")
         self.resizable(True, True)
         self.minsize(700, 640)
-        self.geometry("920x720")
+        self.geometry("920x820")
 
         self._settings = load_settings()
         self._task = None          # parsed + resolved task dict
@@ -145,7 +145,7 @@ class App(tk.Tk):
 
         self._routing_text = tk.Text(
             tab_routing, wrap="word", state="disabled",
-            font=("Segoe UI", 10), relief="flat", padx=8, pady=6,
+            font=("Segoe UI", 10), relief="flat", padx=8, pady=6, height=12,
         )
         # Text tags for formatting
         self._routing_text.tag_configure("overall", font=("Segoe UI", 10, "bold"))
@@ -170,7 +170,7 @@ class App(tk.Tk):
 
         self._strategy_text = tk.Text(
             tab_strat, wrap="word", state="disabled",
-            font=("Courier New", 9), relief="flat",
+            font=("Courier New", 9), relief="flat", height=12,
         )
         strat_vsb = ttk.Scrollbar(tab_strat, orient="vertical",
                                    command=self._strategy_text.yview)
