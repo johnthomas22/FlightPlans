@@ -92,6 +92,15 @@ def cloud_base_to_inversion(cloud_base_ft):
     return round(ft_to_m(cloud_base_ft))
 
 
+def _fmt_latlon(lat, lon) -> str:
+    """Format decimal lat/lon as a readable string, e.g. '42.8117°N  013.2090°E'."""
+    if lat is None or lon is None:
+        return "—"
+    lat_h = "N" if lat >= 0 else "S"
+    lon_h = "E" if lon >= 0 else "W"
+    return f"{abs(lat):.4f}\u00b0{lat_h}  {abs(lon):>8.4f}\u00b0{lon_h}"
+
+
 # ---------------------------------------------------------------------------
 # FPL builder
 # ---------------------------------------------------------------------------
@@ -358,11 +367,30 @@ def _compass(bearing_deg: float) -> str:
     return dirs[round(bearing_deg / 22.5) % 16]
 
 
+def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle distance in km between two lat/lon points."""
+    R = 6371.0
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlam / 2) ** 2
+    return R * 2 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _true_bearing(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Initial true bearing in degrees (0 = N, clockwise) from point 1 to point 2."""
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dlam = math.radians(lon2 - lon1)
+    y = math.sin(dlam) * math.cos(phi2)
+    x = math.cos(phi1) * math.sin(phi2) - math.sin(phi1) * math.cos(phi2) * math.cos(dlam)
+    return (math.degrees(math.atan2(y, x)) + 360) % 360
+
+
 def generate_strategy(task: dict) -> str:
     """
     Return a plain-text flight strategy for *task*.
 
-    Uses TP XY positions (Condor landscape metres, X=East Y=North), weather,
+    Uses TP lat/lon (preferred) or Condor XY for bearing/distance, weather,
     and a built-in glider polar table to produce:
       - Per-leg bearing, distance and wind component analysis
       - McCready-adjusted cruise speed recommendations
@@ -410,11 +438,10 @@ def generate_strategy(task: dict) -> str:
     cruise_kts = round(base_cruise_kts * MC_FACTOR.get(th_strength, 1.0))
     cruise_ms  = cruise_kts * KTS_TO_MS
 
-    # Wind velocity vector (East, North) in kts — direction the air moves TO
-    # wind_dir is the FROM direction, so the TO vector is the opposite.
-    wr         = math.radians(wind_dir)
-    wind_east  = -wind_kts * math.sin(wr)   # positive = flowing eastward
-    wind_north = -wind_kts * math.cos(wr)   # positive = flowing northward
+    # wind_to_dir: direction wind blows TOWARDS (opposite of the FROM bearing)
+    wind_to_dir  = (wind_dir + 180) % 360
+    wind_from_cmp = _compass(wind_dir)       # compass label for windward side
+    streets_likely = wind_kts > 12 and th_strength >= 2
 
     out = []
 
@@ -433,6 +460,17 @@ def generate_strategy(task: dict) -> str:
     out.append(f"  Thermals:   Strength {th_strength}/5,  Activity {th_activity}/5"
                f"  (~{climb_ms:.1f} m/s climbs)")
     out.append(f"  Aircraft:   {aircraft}  (best glide ~{best_glide}:1)")
+
+    # ---------------------------------------------------------------- turnpoints
+    out.append("\nTURNPOINTS")
+    out.append(rule())
+    out.append(f"  {'#':<4} {'Name':<24} {'Coordinates':<30} {'Radius':>7}")
+    out.append("  " + rule())
+    for i, tp in enumerate(tps):
+        label = "S" if i == 0 else ("F" if i == len(tps) - 1 else str(i + 1))
+        latlon = _fmt_latlon(tp.get("lat"), tp.get("lon"))
+        radius_str = f"{tp.get('radius_m', 3000)} m"
+        out.append(f"  {label:<4} {tp['name']:<24} {latlon:<30} {radius_str:>7}")
 
     # ---------------------------------------------------------------- cruise speed
     out.append("\nSUGGESTED CRUISE SPEED")
@@ -459,12 +497,19 @@ def generate_strategy(task: dict) -> str:
 
     leg_data = []
     for i in range(len(tps) - 1):
-        a, b    = tps[i], tps[i + 1]
-        dx      = b["x"] - a["x"]   # East  (Condor X = East)
-        dy      = b["y"] - a["y"]   # North (Condor Y = North)
-        dist_m  = math.sqrt(dx**2 + dy**2)
-        dist_km = dist_m / 1000.0
-        bearing = (math.degrees(math.atan2(dx, dy)) + 360) % 360
+        a, b = tps[i], tps[i + 1]
+
+        # Prefer lat/lon for accurate true bearing; fall back to Condor XY
+        if a.get("lat") is not None and b.get("lat") is not None:
+            dist_km = _haversine_km(a["lat"], a["lon"], b["lat"], b["lon"])
+            dist_m  = dist_km * 1000.0
+            bearing = _true_bearing(a["lat"], a["lon"], b["lat"], b["lon"])
+        else:
+            dx      = b["x"] - a["x"]
+            dy      = b["y"] - a["y"]
+            dist_m  = math.sqrt(dx ** 2 + dy ** 2)
+            dist_km = dist_m / 1000.0
+            bearing = (math.degrees(math.atan2(dx, dy)) + 360) % 360
 
         if dist_m == 0:
             out.append(
@@ -473,13 +518,11 @@ def generate_strategy(task: dict) -> str:
             )
             continue
 
-        # Leg unit vector
-        ex = dx / dist_m
-        ey = dy / dist_m
-
-        # Wind component along leg: positive = tailwind, negative = headwind
-        tailwind_kts  = wind_east * ex + wind_north * ey
-        crosswind_kts = -wind_east * ey + wind_north * ex  # signed left/right
+        # Wind components using true bearing — no Condor axis assumptions needed.
+        # angle: how far the leg direction is ahead of the wind-to direction.
+        angle         = math.radians((bearing - wind_to_dir + 360) % 360)
+        tailwind_kts  =  wind_kts * math.cos(angle)   # +ve = tailwind
+        crosswind_kts =  wind_kts * math.sin(angle)   # +ve = wind from left
 
         if tailwind_kts > 5:
             assess = "Tailwind  — favourable"
@@ -522,13 +565,9 @@ def generate_strategy(task: dict) -> str:
         out.append("  Overall: Wind effects roughly balanced across the task.")
     out.append("")
 
-    wind_to_dir    = (wind_dir + 180) % 360   # direction the wind flows toward
-    wind_to_cmp    = _compass(wind_to_dir)
-    streets_likely = wind_kts > 12 and th_strength >= 2
-
     for d in leg_data:
         tw  = d["tailwind_kts"]
-        xw  = abs(d["crosswind_kts"])
+        xw  = d["crosswind_kts"]   # signed: +ve = wind from left
         brg = d["bearing"]
         notes = []
 
@@ -542,10 +581,13 @@ def generate_strategy(task: dict) -> str:
                 "Strong headwind — fly faster, stay on the optimal track, and "
                 "only circle in strong climbs (>McCready setting)."
             )
-        elif xw > 10:
-            upwind_side = _compass((brg - 90) % 360)
+        elif abs(xw) > 10:
+            # Upwind side: where the wind comes FROM relative to the track.
+            # +ve xw = wind from left → upwind offset is LEFT (brg-90)
+            # -ve xw = wind from right → upwind offset is RIGHT (brg+90)
+            upwind_side = _compass((brg - 90 if xw > 0 else brg + 90) % 360)
             notes.append(
-                f"Crosswind ~{xw:.0f} kts — offset slightly to the {upwind_side} "
+                f"Crosswind ~{abs(xw):.0f} kts — offset slightly to the {upwind_side} "
                 f"(upwind) side of the direct track to compensate for drift "
                 f"and find better lift along the windward slope."
             )
@@ -560,8 +602,8 @@ def generate_strategy(task: dict) -> str:
 
         if tw < -3:
             notes.append(
-                f"Headwind leg: look for orographic and convergence lift on the "
-                f"{wind_to_cmp} (upwind) side of ridges and high ground."
+                f"Headwind leg: look for orographic lift on the "
+                f"{wind_from_cmp} (windward) side of ridges and high ground."
             )
 
         if not notes:
@@ -686,6 +728,7 @@ def pdf_to_task(pdf_path: str, fpl_dir: str, cup_dir: str = None) -> dict:
         print("ERROR: Could not determine launch airfield from PDF (expected 'Airborne over <name>').",
               file=sys.stderr)
         sys.exit(1)
+    apt_lat = apt_lon = None
     apt_latlon = db.get_cup_latlon(landscape, airport_name)
     if apt_latlon:
         apt_lat, apt_lon, _ = apt_latlon
@@ -693,7 +736,8 @@ def pdf_to_task(pdf_path: str, fpl_dir: str, cup_dir: str = None) -> dict:
                                  lat=apt_lat, lon=apt_lon)
     else:
         ax, ay, az = _resolve_tp(db, landscape, airport_name, "airport")
-    task["airport_tp"] = {"name": airport_name, "x": ax, "y": ay, "z": az}
+    task["airport_tp"] = {"name": airport_name, "x": ax, "y": ay, "z": az,
+                          "lat": apt_lat, "lon": apt_lon}
 
     # Resolve each task TP — pass lat/lon from the PDF for geo-transform support
     resolved = []
@@ -890,16 +934,24 @@ def main():
         content  = build_fpl(task)
         base     = os.path.splitext(os.path.basename(args.pdf))[0]
         out_path = args.output or (base + ".fpl")
+        if os.path.exists(out_path):
+            print(f"ERROR: Output file already exists: {out_path}\n"
+                  f"       Rename or delete it first, or use --output to specify a different path.",
+                  file=sys.stderr)
+            sys.exit(1)
         with open(out_path, "w", newline="\r\n") as f:
             f.write(content)
 
         tps      = task["turnpoints"]
         dist     = calc_task_distance(tps)
-        airport  = task.get("airport_tp", {}).get("name", "?")
-        tp_names = " -> ".join(tp["name"] for tp in tps)
+        airport  = task.get("airport_tp", {})
         print(f"Generated: {out_path}")
-        print(f"  Airport:  {airport}")
-        print(f"  Route:    {tp_names}")
+        print(f"  Airport:  {airport.get('name', '?')}  "
+              f"{_fmt_latlon(airport.get('lat'), airport.get('lon'))}")
+        print(f"  Route:")
+        for i, tp in enumerate(tps):
+            label = "S" if i == 0 else ("F" if i == len(tps) - 1 else str(i + 1))
+            print(f"    {label}  {tp['name']:<26}  {_fmt_latlon(tp.get('lat'), tp.get('lon'))}")
         print(f"  Distance: {dist:.1f} km")
         print(f"  Aircraft: {task.get('aircraft', '?')}")
         wx = task["weather"]
@@ -916,6 +968,11 @@ def main():
 
         content  = build_fpl(task)
         out_path = args.output or (os.path.splitext(args.task)[0] + ".fpl")
+        if os.path.exists(out_path):
+            print(f"ERROR: Output file already exists: {out_path}\n"
+                  f"       Rename or delete it first, or use --output to specify a different path.",
+                  file=sys.stderr)
+            sys.exit(1)
         with open(out_path, "w", newline="\r\n") as f:
             f.write(content)
 

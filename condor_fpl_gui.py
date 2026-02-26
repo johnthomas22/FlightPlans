@@ -68,6 +68,15 @@ def _calc_distance(tps: list) -> float:
     return dist / 1000.0
 
 
+def _fmt_latlon(lat, lon) -> str:
+    """Format decimal lat/lon as a readable string, e.g. '42.8117°N  013.2090°E'."""
+    if lat is None or lon is None:
+        return "—"
+    lat_h = "N" if lat >= 0 else "S"
+    lon_h = "E" if lon >= 0 else "W"
+    return f"{abs(lat):.4f}\u00b0{lat_h}  {abs(lon):>8.4f}\u00b0{lon_h}"
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -122,6 +131,32 @@ class App(tk.Tk):
         mid.columnconfigure(1, weight=1)
         mid.columnconfigure(3, weight=1)
 
+        # ---- Routing tab -----------------------------------------------
+        tab_routing = ttk.Frame(nb, padding=6)
+        nb.add(tab_routing, text="Routing")
+        tab_routing.rowconfigure(0, weight=1)
+        tab_routing.columnconfigure(0, weight=1)
+
+        self._routing_text = tk.Text(
+            tab_routing, wrap="word", state="disabled",
+            font=("Segoe UI", 10), relief="flat", padx=8, pady=6,
+        )
+        # Text tags for formatting
+        self._routing_text.tag_configure("overall", font=("Segoe UI", 10, "bold"))
+        self._routing_text.tag_configure("leg_hdr", font=("Segoe UI", 10, "bold"),
+                                          foreground="#1a5276")
+        self._routing_text.tag_configure("bullet",  lmargin1=20, lmargin2=32)
+        self._routing_text.tag_configure("tailwind", foreground="#1a7a1a")
+        self._routing_text.tag_configure("headwind", foreground="#a93226")
+        self._routing_text.tag_configure("neutral",  foreground="#7d6608")
+
+        rout_vsb = ttk.Scrollbar(tab_routing, orient="vertical",
+                                  command=self._routing_text.yview)
+        self._routing_text.configure(yscrollcommand=rout_vsb.set)
+        self._routing_text.grid(row=0, column=0, sticky="nsew")
+        rout_vsb.grid(row=0, column=1, sticky="ns")
+
+        # ---- Strategy tab -----------------------------------------------
         tab_strat = ttk.Frame(nb, padding=6)
         nb.add(tab_strat, text="Strategy")
         tab_strat.rowconfigure(0, weight=1)
@@ -169,7 +204,7 @@ class App(tk.Tk):
 
         cols = ("#", "Name", "Radius", "Angle", "Coords")
         self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=7)
-        for c, w in zip(cols, (30, 180, 70, 60, 200)):
+        for c, w in zip(cols, (30, 160, 70, 60, 230)):
             self._tree.heading(c, text=c)
             self._tree.column(c, width=w, anchor="w" if c in ("Name", "Coords") else "center",
                               stretch=(c == "Name"))
@@ -315,6 +350,7 @@ class App(tk.Tk):
     def _on_load_success(self, task: dict, dist: float, strategy: str):
         self._task = task
         self._populate_details(task, dist)
+        self._show_routing(strategy)
         self._show_strategy(strategy)
         self._gen_btn.config(state="normal")
         n_tps = len(task["turnpoints"])
@@ -338,6 +374,7 @@ class App(tk.Tk):
         for item in self._tree.get_children():
             self._tree.delete(item)
         self._lbl_dist.config(text="")
+        self._show_routing("")
         self._show_strategy("")
 
     def _show_strategy(self, text: str):
@@ -347,6 +384,61 @@ class App(tk.Tk):
         if text:
             self._strategy_text.insert("1.0", text)
         self._strategy_text.config(state="disabled")
+
+    def _show_routing(self, strategy: str):
+        """Extract ROUTING NOTES from the strategy and display with formatting."""
+        import re
+        widget = self._routing_text
+        widget.config(state="normal")
+        widget.delete("1.0", "end")
+
+        if not strategy:
+            widget.config(state="disabled")
+            return
+
+        # Extract the ROUTING NOTES section (stops at the next all-caps section)
+        m = re.search(
+            r'ROUTING NOTES\n[─]+\n(.*?)(?=\n[A-Z ]{4,}\n[─═]+|\Z)',
+            strategy, re.DOTALL
+        )
+        if not m:
+            widget.insert("end", "(No routing notes available.)")
+            widget.config(state="disabled")
+            return
+
+        body = m.group(1).rstrip()
+
+        for raw_line in body.split("\n"):
+            line = raw_line.rstrip()
+
+            # "Overall:" summary line
+            if line.strip().startswith("Overall:"):
+                widget.insert("end", line.strip() + "\n\n", "overall")
+
+            # Leg header: "  Leg N (From → To):"
+            elif re.match(r'\s+Leg \d+', line) or re.match(r'\s+Leg \d+', line):
+                widget.insert("end", line.strip() + "\n", "leg_hdr")
+
+            # Bullet points
+            elif line.strip().startswith("•"):
+                text_body = line.strip()[1:].strip()
+                # Colour-code by sentiment
+                if any(w in text_body for w in ("tailwind", "Tailwind", "favourable", "dolphin")):
+                    tag = "tailwind"
+                elif any(w in text_body for w in ("headwind", "Headwind", "difficult", "faster")):
+                    tag = "headwind"
+                else:
+                    tag = "bullet"
+                widget.insert("end", "  • " + text_body + "\n", tag)
+
+            # Skip blank lines between legs — add a small gap instead
+            elif line.strip() == "":
+                widget.insert("end", "\n")
+
+            else:
+                widget.insert("end", line + "\n")
+
+        widget.config(state="disabled")
 
     def _populate_details(self, task: dict, dist: float):
         wx = task.get("weather", {})
@@ -383,7 +475,7 @@ class App(tk.Tk):
             else:
                 label = str(i + 1)
 
-            coords_str = f"({tp['x']:.0f}, {tp['y']:.0f})"
+            coords_str = _fmt_latlon(tp.get("lat"), tp.get("lon"))
             self._tree.insert("", "end", values=(
                 label,
                 tp["name"],
@@ -399,7 +491,7 @@ class App(tk.Tk):
                 apt.get("name", ""),
                 "3000 m",
                 "90\u00b0",
-                f"({apt.get('x', 0):.0f}, {apt.get('y', 0):.0f})",
+                _fmt_latlon(apt.get("lat"), apt.get("lon")),
             ), tags=("airport",))
             self._tree.tag_configure("airport", foreground="gray")
 
@@ -425,6 +517,14 @@ class App(tk.Tk):
                 os.makedirs(out_dir, exist_ok=True)
             except Exception as e:
                 messagebox.showerror("Cannot create directory", str(e))
+                return
+
+        if os.path.isfile(out):
+            if not messagebox.askyesno(
+                "Overwrite?",
+                f"This file already exists:\n{out}\n\nOverwrite it?",
+                icon="warning",
+            ):
                 return
 
         try:
