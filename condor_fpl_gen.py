@@ -363,8 +363,9 @@ def build_xcsoar_tsk(task: dict) -> str:
     turnpoints[1:-1] → <Point type="Turn">   (one per intermediate waypoint)
     turnpoints[-1]   → <Point type="Finish">
 
-    All observation zones are mapped to XCSoar Cylinder type using the
-    radius_m from each turnpoint.
+    Condor angle mapping → XCSoar OZ type:
+      360° → Cylinder   180° → Line (length=radius)
+       90° → SymmetricQuadrant   other → Sector (half-angle = angle/2)
     """
     tps = task.get("turnpoints", [])
     if not tps:
@@ -394,9 +395,16 @@ def build_xcsoar_tsk(task: dict) -> str:
         angle = tp.get("angle_deg", 360)
         if angle == 360:
             oz = f'<ObservationZone type="Cylinder" radius="{radius}"/>'
+        elif angle == 180:
+            # 180° Condor sector = start/finish line; gate width = radius
+            oz = f'<ObservationZone type="Line" length="{radius}"/>'
+        elif angle == 90:
+            # 90° Condor sector = XCSoar SymmetricQuadrant (angle is full sector angle)
+            oz = f'<ObservationZone type="SymmetricQuadrant" radius="{radius}" angle="90"/>'
         else:
-            # Sector OZ: radius = outer boundary; inner_radius=0 (no inner cylinder).
-            oz = f'<ObservationZone type="Sector" radius="{radius}" inner_radius="0" angle="{angle}"/>'
+            # General sector: XCSoar Sector OZ uses a half-angle
+            half = angle // 2
+            oz = f'<ObservationZone type="Sector" radius="{radius}" inner_radius="0" angle="{half}"/>'
 
         lines += [
             f'  <Point type="{pt_type}">',

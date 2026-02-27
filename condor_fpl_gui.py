@@ -100,9 +100,11 @@ class App(tk.Tk):
         self._cup_dir  = tk.StringVar(value=self._settings.get("cup_dir", DEFAULT_CUP_DIR))
         self._out_path  = tk.StringVar()
         self._xcsoar_tsk = tk.StringVar(value=self._settings.get("xcsoar_tsk", ""))
+        self._gen_xcsoar = tk.BooleanVar(value=self._settings.get("gen_xcsoar", True))
         self._status    = tk.StringVar(value="Ready — browse for a task briefing PDF to begin.")
 
         self._build_ui()
+        self._toggle_xcsoar()   # apply initial enabled/disabled state
 
     # ------------------------------------------------------------------
     # UI construction
@@ -231,15 +233,22 @@ class App(tk.Tk):
         ttk.Entry(bot, textvariable=self._out_path).grid(row=0, column=1, sticky="ew", **pad)
         ttk.Button(bot, text="Browse…", command=self._browse_out).grid(row=0, column=2, **pad)
 
-        ttk.Label(bot, text="XCSoar TSK:").grid(row=1, column=0, sticky="w", **pad)
-        ttk.Entry(bot, textvariable=self._xcsoar_tsk).grid(row=1, column=1, sticky="ew", **pad)
-        ttk.Button(bot, text="Browse…", command=self._browse_xcsoar_tsk).grid(row=1, column=2, **pad)
+        ttk.Checkbutton(
+            bot, text="Also generate XCSoar .tsk file", variable=self._gen_xcsoar,
+            command=self._toggle_xcsoar,
+        ).grid(row=1, column=0, columnspan=3, sticky="w", **pad)
+
+        ttk.Label(bot, text="XCSoar TSK:").grid(row=2, column=0, sticky="w", **pad)
+        self._xcsoar_entry = ttk.Entry(bot, textvariable=self._xcsoar_tsk)
+        self._xcsoar_entry.grid(row=2, column=1, sticky="ew", **pad)
+        self._xcsoar_browse_btn = ttk.Button(bot, text="Browse…", command=self._browse_xcsoar_tsk)
+        self._xcsoar_browse_btn.grid(row=2, column=2, **pad)
 
         self._gen_btn = ttk.Button(
-            bot, text="Generate FPL + XCSoar", command=self._on_generate,
+            bot, text="Generate FPL", command=self._on_generate,
             state="disabled", style="Accent.TButton",
         )
-        self._gen_btn.grid(row=2, column=0, columnspan=3, pady=(6, 2))
+        self._gen_btn.grid(row=3, column=0, columnspan=3, pady=(6, 2))
 
         # ---- Status bar ------------------------------------------------
         status_bar = ttk.Label(self, textvariable=self._status,
@@ -285,6 +294,13 @@ class App(tk.Tk):
             self._settings["cup_dir"] = path
             save_settings(self._settings)
 
+    def _toggle_xcsoar(self):
+        state = "normal" if self._gen_xcsoar.get() else "disabled"
+        self._xcsoar_entry.config(state=state)
+        self._xcsoar_browse_btn.config(state=state)
+        self._settings["gen_xcsoar"] = self._gen_xcsoar.get()
+        save_settings(self._settings)
+
     def _browse_xcsoar_tsk(self):
         current = self._xcsoar_tsk.get()
         init_dir = os.path.dirname(current) if current else DEFAULT_XCSOAR_DIR
@@ -324,11 +340,12 @@ class App(tk.Tk):
         base = os.path.splitext(os.path.basename(pdf_path))[0]
         # FPL output
         out_dir = self._settings.get("last_out_dir", DEFAULT_OUTPUT_DIR)
-        self._out_path.set(os.path.normpath(os.path.join(out_dir, base + "_Claude.fpl")))
-        # XCSoar TSK output: use saved xcsoar_tsk dir if available, else DEFAULT_XCSOAR_DIR
-        saved_tsk = self._settings.get("xcsoar_tsk", "")
-        xcsoar_dir = os.path.dirname(saved_tsk) if saved_tsk else DEFAULT_XCSOAR_DIR
-        self._xcsoar_tsk.set(os.path.normpath(os.path.join(xcsoar_dir, base + "_Claude.tsk")))
+        self._out_path.set(os.path.normpath(os.path.join(out_dir, base + ".fpl")))
+        # XCSoar TSK output: only auto-fill when the checkbox is enabled
+        if self._gen_xcsoar.get():
+            saved_tsk = self._settings.get("xcsoar_tsk", "")
+            xcsoar_dir = os.path.dirname(saved_tsk) if saved_tsk else DEFAULT_XCSOAR_DIR
+            self._xcsoar_tsk.set(os.path.normpath(os.path.join(xcsoar_dir, base + ".tsk")))
 
     # ------------------------------------------------------------------
     # Load PDF
@@ -566,7 +583,7 @@ class App(tk.Tk):
                 return
 
         # --- XCSoar .tsk path (optional) -----------------------------------
-        tsk_path = self._xcsoar_tsk.get().strip()
+        tsk_path = self._xcsoar_tsk.get().strip() if self._gen_xcsoar.get() else ""
 
         tps_have_latlon = all(
             tp.get("lat") is not None for tp in self._task.get("turnpoints", [])
