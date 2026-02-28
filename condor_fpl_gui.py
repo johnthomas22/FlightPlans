@@ -448,9 +448,10 @@ class App(tk.Tk):
             widget.config(state="disabled")
             return
 
-        # Extract the ROUTING NOTES section (stops at the next all-caps section)
+        # Extract the ROUTING NOTES section (stops at the next section header,
+        # detected as a line beginning with 4+ consecutive uppercase letters)
         m = re.search(
-            r'ROUTING NOTES\n[─]+\n(.*?)(?=\n[A-Z ]{4,}\n[─═]+|\Z)',
+            r'ROUTING NOTES\n[─]+\n(.*?)(?=\n[A-Z]{4,}|\Z)',
             strategy, re.DOTALL
         )
         if not m:
@@ -463,8 +464,12 @@ class App(tk.Tk):
         for raw_line in body.split("\n"):
             line = raw_line.rstrip()
 
+            # Separator lines (─ / ═) — skip; they overflow proportional-font widgets
+            if line.strip() and all(c in '─═' for c in line.strip()):
+                pass
+
             # "Overall:" summary line
-            if line.strip().startswith("Overall:"):
+            elif line.strip().startswith("Overall:"):
                 widget.insert("end", line.strip() + "\n\n", "overall")
 
             # Leg header: "  Leg N (From → To):"
