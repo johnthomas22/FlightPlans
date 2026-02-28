@@ -214,7 +214,7 @@ class App(tk.Tk):
         for c, w in zip(cols, (30, 55, 140, 70, 55, 230)):
             self._tree.heading(c, text=c)
             self._tree.column(c, width=w, anchor="w" if c in ("Name", "Coords") else "center",
-                              stretch=(c == "Name"))
+                              stretch=(c == "Coords"))
         vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self._tree.yview)
         self._tree.configure(yscrollcommand=vsb.set)
         self._tree.pack(side="left", fill="both", expand=True)
@@ -552,6 +552,16 @@ class App(tk.Tk):
 
         self._lbl_dist.config(text=f"Task distance: {dist:.1f} km")
 
+        # Auto-size Name column to fit the longest name
+        all_names = [tp["name"] for tp in tps]
+        if apt:
+            all_names.append(apt.get("name", ""))
+        if all_names:
+            from tkinter import font as tkfont
+            f = tkfont.nametofont("TkDefaultFont")
+            max_w = max(f.measure(n) for n in all_names)
+            self._tree.column("Name", width=max(max_w + 16, 60))
+
     # ------------------------------------------------------------------
     # Generate
     # ------------------------------------------------------------------
@@ -626,11 +636,27 @@ class App(tk.Tk):
             msg += f"\n\n(lat/lon missing from turnpoints — .tsk not written)"
 
         self._set_status(f"Done — written: {out}" + (f"  +  {tsk_path}" if write_tsk else ""))
-        messagebox.showinfo("Success", msg)
+        self._show_wide_info("Success", msg)
 
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
+
+    def _show_wide_info(self, title: str, msg: str):
+        """Show an info dialog wide enough that long file paths don't wrap."""
+        dlg = tk.Toplevel(self)
+        dlg.title(title)
+        dlg.resizable(False, False)
+        dlg.transient(self)
+        dlg.grab_set()
+        ttk.Label(dlg, text=msg, justify="left", padding=(16, 12)).pack()
+        ttk.Button(dlg, text="OK", command=dlg.destroy, width=8).pack(pady=(0, 12))
+        dlg.update_idletasks()
+        # Enforce a minimum width so paths don't wrap
+        min_w = 520
+        if dlg.winfo_width() < min_w:
+            dlg.geometry(f"{min_w}x{dlg.winfo_height()}")
+        dlg.wait_window()
 
     def _set_status(self, msg: str):
         self._status.set(msg)
