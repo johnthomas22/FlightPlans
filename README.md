@@ -8,6 +8,8 @@ A Python utility to generate Condor 2/3 gliding simulator `.fpl` flight plan fil
 
 The `.fpl` format is a Windows INI-style text file with CRLF line endings, consisting of four sections: `[Task]`, `[Weather]`, `[Plane]`, and `[GameOptions]`.
 
+"Caveat emptor" applies. While I’ve developed it using a well-known LLM, and the code is all available in a public repository, I haven’t checked it doesn’t do something undesirable. No reason it should, and I’ve been running it in test on my own system.
+
 ## Files
 
 | File | Purpose |
